@@ -49,24 +49,34 @@ def mpesa_callback(request):
                     group_id = settings.TELEGRAM_GROUP_ID
                     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
                     
-                    # The New Message Format
+                    # A. MESSAGE TO GROUP
                     final_message = (
                         f"{ad.message_text}\n\n"
                         f"📢 **Sponsored by {sponsor_name}**"
                     )
 
-                    payload = {
+                    payload_group = {
                         "chat_id": group_id,
                         "text": final_message,
                         "parse_mode": "Markdown" # Allows clickable links
                     }
                     
                     try:
-                        requests.post(url, json=payload)
+                        requests.post(url, json=payload_group)
                         print(f"🚀 Ad Posted to Group {group_id}!")
                         
                         ad.is_posted = True
                         ad.save()
+
+                        # --- B. CONFIRMATION TO USER (DM) ---
+                        # We use the user's telegram_id to send them a DM
+                        payload_dm = {
+                            "chat_id": user.telegram_id,
+                            "text": "✅ **AD POSTED SUCCESSFULLY MZEE!** 🚀\nCheck the group now."
+                        }
+                        requests.post(url, json=payload_dm)
+                        print(f"📩 Confirmation sent to user DM.")
+
                     except Exception as e:
                         print(f"❌ Failed to post to Telegram: {e}")
                 else:

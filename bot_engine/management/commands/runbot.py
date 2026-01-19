@@ -8,38 +8,52 @@ from aiogram.filters import Command as TGCommand
 from bot_engine.models import TelegramUser, Transaction, PendingAd
 from bot_engine.mpesa import initiate_stk_push
 
+# Set logging to see errors in the black terminal
 logging.basicConfig(level=logging.INFO)
 
 class Command(BaseCommand):
     help = 'Runs the Telegram Bot'
 
     def handle(self, *args, **options):
+        # Initialize Bot
         bot = Bot(token=settings.TELEGRAM_BOT_TOKEN)
         dp = Dispatcher()
 
         # --- 1. POLICEMAN (Group Handler) ---
-        # Only works if Bot is ADMIN
         @dp.message(F.chat.type.in_({"group", "supergroup"}))
         async def handle_group_messages(message: types.Message):
-            # Check for links
+            
+            # Print to terminal so you know the bot "sees" the message
+            print(f"👀 Group msg from {message.from_user.first_name}: {message.text}")
+
+            # Check for links (Standard Regex)
             link_pattern = r"(http|https|www\.|t\.me|\.com|\.co\.ke|\.org)"
             
             if message.text and re.search(link_pattern, message.text, re.IGNORECASE):
-                print(f"👮 Policeman: Caught a link from {message.from_user.first_name}")
+                print(f"👮 Policeman: Deleting link from {message.from_user.first_name}")
                 
-                # Reply with Warning
-                await message.reply(
-                    f"🚫 **Links are not allowed here, {message.from_user.first_name}!**\n\n"
-                    "To post an ad, DM me directly:\n"
-                    "👉 @Linkgroup_bot",
-                    parse_mode="Markdown"
-                )
-                
-                # Delete the message
+                # 1. Delete the Spam
                 try:
                     await message.delete()
-                except Exception:
-                    pass 
+                    print("✅ Message deleted successfully.")
+                except Exception as e:
+                    print(f"❌ Delete Failed (Check Admin Rights): {e}")
+
+                # 2. Send the Warning (PLAIN TEXT to prevent crashes)
+                try:
+                    # We use first_name to be safe.
+                    name = message.from_user.first_name
+                    
+                    # ERROR FIX: We removed 'parse_mode="Markdown"' so names with "_" don't crash the bot.
+                    await message.answer(
+                        f"🚫 Links are not allowed here, {name}!\n\n"
+                        "Want to advertise? I can post it for you.\n"
+                        "👉 DM me: @Linkgrouperbot\n"
+                        "(Max 100 characters)"
+                    )
+                    print("✅ Warning sent.")
+                except Exception as e:
+                    print(f"⚠️ Warning Failed: {e}")
 
         # --- 2. CASHIER (DM Handler) ---
         # Only works in Private DMs
@@ -49,8 +63,8 @@ class Command(BaseCommand):
             user_id = message.from_user.id
             username = message.from_user.username or "Unknown"
             
-            # Save user
-            user, created = await asyncio.to_thread(
+            # Save user to DB
+            await asyncio.to_thread(
                 TelegramUser.objects.get_or_create,
                 telegram_id=user_id,
                 defaults={'username': username}
@@ -58,10 +72,10 @@ class Command(BaseCommand):
             
             await message.answer(
                 f"Welcome {message.from_user.first_name}! 🚀\n"
-                "I am the **Link Warden**.\n\n"
-                "📝 **How to Post:**\n"
-                "1. Send me your link/text here.\n"
-                "2. Pay **30 KES** via M-Pesa.\n"
+                "I am the Link Warden.\n\n"
+                "How to Post:\n"
+                "1. Send me your link/text here (Max 100 chars).\n"
+                "2. Pay 30 KES via M-Pesa.\n"
                 "3. I will automatically post it to the group for you!"
             )
 
@@ -70,6 +84,7 @@ class Command(BaseCommand):
             phone = message.text
             user_id = message.from_user.id
             
+            # Verify User Exists
             try:
                 user = await asyncio.to_thread(TelegramUser.objects.get, telegram_id=user_id)
             except TelegramUser.DoesNotExist:
@@ -79,6 +94,7 @@ class Command(BaseCommand):
             await message.answer(f"⌛ Sending STK Push to {phone} for KES 1 (Test)...")
             
             try:
+                # Trigger M-Pesa STK Push
                 response = await asyncio.to_thread(
                     initiate_stk_push, 
                     phone_number=phone, 
@@ -88,6 +104,7 @@ class Command(BaseCommand):
                 checkout_id = response.get('MerchantRequestID') or response.get('CheckoutRequestID')
                 
                 if checkout_id:
+                    # Save Transaction as 'Pending'
                     await asyncio.to_thread(
                         Transaction.objects.create,
                         user=user,
@@ -95,9 +112,10 @@ class Command(BaseCommand):
                         amount=1, 
                         phone_number=phone
                     )
-                    await message.answer("📲 **Check your phone and enter PIN!**")
+                    await message.answer("📲 Check your phone and enter PIN!")
                 else:
-                    await message.answer("❌ Failed to contact M-Pesa. Try again.")
+                    await message.answer("❌ Connection Error. Ensure your Ngrok URL is updated in .env")
+                    print(f"M-Pesa Error: {response}")
                     
             except Exception as e:
                 print(f"Error: {e}")
@@ -110,16 +128,25 @@ class Command(BaseCommand):
             
             if not text: return
 
-            # Check for link
+            # --- RULE: MAX 100 CHARACTERS ---
+            if len(text) > 100:
+                await message.answer(
+                    f"❌ Too long! ({len(text)}/100 chars)\n"
+                    "Please shorten your ad to under 100 characters."
+                )
+                return
+
+            # Check for Link
             link_pattern = r"(http|https|www\.|t\.me|\.com)"
             if re.search(link_pattern, text, re.IGNORECASE):
-                # Save Ad
+                
                 try:
                     user = await asyncio.to_thread(TelegramUser.objects.get, telegram_id=user_id)
                 except TelegramUser.DoesNotExist:
                      await message.answer("Please type /start first.")
                      return
 
+                # Save Pending Ad
                 await asyncio.to_thread(
                     PendingAd.objects.create,
                     user=user,
@@ -128,8 +155,8 @@ class Command(BaseCommand):
                 )
 
                 await message.answer(
-                    "✅ **Ad Accepted!**\n\n"
-                    "Reply with your **M-Pesa Number** (e.g., 0712345678) to complete payment."
+                    "✅ Ad Accepted!\n\n"
+                    "Reply with your M-Pesa Number (e.g., 0712345678) to complete payment."
                 )
             else:
                 await message.answer("Please send the link you want to advertise.")
