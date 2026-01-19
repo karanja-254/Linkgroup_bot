@@ -1,10 +1,11 @@
 import asyncio
 import logging
+import re
 from django.core.management.base import BaseCommand
 from django.conf import settings
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command as TGCommand
-from bot_engine.models import TelegramUser, Transaction
+from bot_engine.models import TelegramUser, Transaction, PendingAd
 from bot_engine.mpesa import initiate_stk_push
 
 # Configure logging
@@ -14,44 +15,64 @@ class Command(BaseCommand):
     help = 'Runs the Telegram Bot'
 
     def handle(self, *args, **options):
-        # 1. Initialize Bot
         bot = Bot(token=settings.TELEGRAM_BOT_TOKEN)
         dp = Dispatcher()
 
-        # --- HANDLERS ---
+        # --- 1. POLICEMAN (Group Handler) ---
+        # Triggers ONLY in Groups when a link is found
+        @dp.message(F.chat.type.in_({"group", "supergroup"}))
+        async def handle_group_messages(message: types.Message):
+            # Check for links (http, .com, t.me, etc)
+            link_pattern = r"(http|https|www\.|t\.me|\.com|\.co\.ke|\.org)"
+            
+            if message.text and re.search(link_pattern, message.text, re.IGNORECASE):
+                user_name = message.from_user.first_name
+                
+                # 1. Reply with Warning
+                await message.reply(
+                    f"🚫 **Links are not allowed here, {user_name}!**\n\n"
+                    "To post an ad, DM me directly:\n"
+                    "👉 @Linkgroup_bot",
+                    parse_mode="Markdown"
+                )
+                
+                # 2. Delete the user's message (Bot must be Admin)
+                try:
+                    await message.delete()
+                except Exception:
+                    pass # Ignore if we can't delete
 
-        # /start Command
-        @dp.message(TGCommand("start"))
+        # --- 2. CASHIER (DM Handler) ---
+        # Triggers ONLY in Private DMs
+
+        # /start (Only in Private)
+        @dp.message(F.chat.type == "private", TGCommand("start"))
         async def cmd_start(message: types.Message):
             user_id = message.from_user.id
             username = message.from_user.username or "Unknown"
             
-            # Save user to Database
+            # Save user
             user, created = await asyncio.to_thread(
                 TelegramUser.objects.get_or_create,
                 telegram_id=user_id,
                 defaults={'username': username}
             )
             
-            if created:
-                welcome_text = (
-                    f"Welcome {message.from_user.first_name}! 🚀\n"
-                    "I am the Link Warden. DM me a link, pay 30 KES, "
-                    "and I will post it to the group for you."
-                )
-            else:
-                welcome_text = "Welcome back! Send me the text you want to post."
+            await message.answer(
+                f"Welcome {message.from_user.first_name}! 🚀\n"
+                "I am the **Link Warden**.\n\n"
+                "📝 **How to Post:**\n"
+                "1. Send me your link/text here.\n"
+                "2. Pay **30 KES** via M-Pesa.\n"
+                "3. I will automatically post it to the group for you!"
+            )
 
-            await message.answer(welcome_text)
-
-        # Phone Number Listener (Regex for Kenyan numbers)
-        # Handles 07xx, 01xx, or +254xx
-        @dp.message(F.text.regexp(r'^(07|01|\+254)\d{8}$'))
+        # Phone Number Listener (Only in Private)
+        @dp.message(F.chat.type == "private", F.text.regexp(r'^(07|01|\+254)\d{8}$'))
         async def process_payment(message: types.Message):
             phone = message.text
             user_id = message.from_user.id
             
-            # Get User from DB
             try:
                 user = await asyncio.to_thread(TelegramUser.objects.get, telegram_id=user_id)
             except TelegramUser.DoesNotExist:
@@ -60,20 +81,17 @@ class Command(BaseCommand):
             
             await message.answer(f"⌛ Sending STK Push to {phone} for KES 1 (Test)...")
             
-            # Trigger M-Pesa
             try:
-                # We use asyncio.to_thread because requests is synchronous
                 response = await asyncio.to_thread(
                     initiate_stk_push, 
                     phone_number=phone, 
-                    amount=1 # Test with 1 KES first
+                    amount=1
                 )
                 
-                checkout_id = response.get('MerchantRequestID')
-                response_code = response.get('ResponseCode')
+                checkout_id = response.get('MerchantRequestID') or response.get('CheckoutRequestID')
                 
-                if response_code == "0":
-                    # Save "Pending" transaction to DB
+                if checkout_id:
+                    # Save Transaction
                     await asyncio.to_thread(
                         Transaction.objects.create,
                         user=user,
@@ -81,41 +99,49 @@ class Command(BaseCommand):
                         amount=1, 
                         phone_number=phone
                     )
-                    await message.answer("📲 Check your phone and enter PIN!")
+                    await message.answer("📲 **Check your phone and enter PIN!**")
                 else:
-                    error_message = response.get('errorMessage', 'Unknown error')
-                    await message.answer(f"❌ Failed to send STK Push: {error_message}")
+                    await message.answer("❌ Failed to contact M-Pesa. Try again.")
                     
             except Exception as e:
                 print(f"Error: {e}")
-                await message.answer("❌ System Error connecting to M-Pesa.")
+                await message.answer("❌ System Error.")
 
-        # Text/Link Validator
-        @dp.message()
-        async def handle_messages(message: types.Message):
+        # Link Validator (Only in Private)
+        @dp.message(F.chat.type == "private")
+        async def handle_dm_messages(message: types.Message):
             text = message.text
+            user_id = message.from_user.id
             
-            if not text:
-                return
+            if not text: return
 
-            # Basic Validation
-            if "http" in text or ".com" in text or "t.me" in text:
-                link_count = text.count("http") + text.count("t.me")
-                if link_count > 1:
-                    await message.answer("❌ Error: Only 1 link allowed per post.")
+            # Check for link
+            link_pattern = r"(http|https|www\.|t\.me|\.com)"
+            if re.search(link_pattern, text, re.IGNORECASE):
+                if len(text) > 200:
+                    await message.answer(f"❌ Text is too long ({len(text)}/200 chars).")
                     return
                 
-                if len(text) > 100:
-                    await message.answer(f"❌ Error: Text is too long ({len(text)}/100 chars).")
-                    return
-                
-                # If valid:
+                # Save Ad
+                try:
+                    user = await asyncio.to_thread(TelegramUser.objects.get, telegram_id=user_id)
+                except TelegramUser.DoesNotExist:
+                     await message.answer("Please type /start first.")
+                     return
+
+                await asyncio.to_thread(
+                    PendingAd.objects.create,
+                    user=user,
+                    message_text=text,
+                    is_posted=False
+                )
+
                 await message.answer(
-                    "✅ Ad Validated!\n"
-                    "Please reply with your **M-Pesa Phone Number** (e.g., 0712345678) to pay."
+                    "✅ **Ad Accepted!**\n\n"
+                    "Reply with your **M-Pesa Number** (e.g., 0712345678) to complete payment."
                 )
             else:
-                await message.answer("Please send the text with the link you want to advertise.")
+                await message.answer("Please send the link you want to advertise.")
 
         # --- START LOOP ---
         async def main():
