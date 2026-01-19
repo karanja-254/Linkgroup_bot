@@ -8,7 +8,6 @@ from aiogram.filters import Command as TGCommand
 from bot_engine.models import TelegramUser, Transaction, PendingAd
 from bot_engine.mpesa import initiate_stk_push
 
-# Configure logging
 logging.basicConfig(level=logging.INFO)
 
 class Command(BaseCommand):
@@ -19,33 +18,32 @@ class Command(BaseCommand):
         dp = Dispatcher()
 
         # --- 1. POLICEMAN (Group Handler) ---
-        # Triggers ONLY in Groups when a link is found
+        # Only works if Bot is ADMIN
         @dp.message(F.chat.type.in_({"group", "supergroup"}))
         async def handle_group_messages(message: types.Message):
-            # Check for links (http, .com, t.me, etc)
+            # Check for links
             link_pattern = r"(http|https|www\.|t\.me|\.com|\.co\.ke|\.org)"
             
             if message.text and re.search(link_pattern, message.text, re.IGNORECASE):
-                user_name = message.from_user.first_name
+                print(f"👮 Policeman: Caught a link from {message.from_user.first_name}")
                 
-                # 1. Reply with Warning
+                # Reply with Warning
                 await message.reply(
-                    f"🚫 **Links are not allowed here, {user_name}!**\n\n"
+                    f"🚫 **Links are not allowed here, {message.from_user.first_name}!**\n\n"
                     "To post an ad, DM me directly:\n"
                     "👉 @Linkgroup_bot",
                     parse_mode="Markdown"
                 )
                 
-                # 2. Delete the user's message (Bot must be Admin)
+                # Delete the message
                 try:
                     await message.delete()
                 except Exception:
-                    pass # Ignore if we can't delete
+                    pass 
 
         # --- 2. CASHIER (DM Handler) ---
-        # Triggers ONLY in Private DMs
+        # Only works in Private DMs
 
-        # /start (Only in Private)
         @dp.message(F.chat.type == "private", TGCommand("start"))
         async def cmd_start(message: types.Message):
             user_id = message.from_user.id
@@ -67,7 +65,6 @@ class Command(BaseCommand):
                 "3. I will automatically post it to the group for you!"
             )
 
-        # Phone Number Listener (Only in Private)
         @dp.message(F.chat.type == "private", F.text.regexp(r'^(07|01|\+254)\d{8}$'))
         async def process_payment(message: types.Message):
             phone = message.text
@@ -91,7 +88,6 @@ class Command(BaseCommand):
                 checkout_id = response.get('MerchantRequestID') or response.get('CheckoutRequestID')
                 
                 if checkout_id:
-                    # Save Transaction
                     await asyncio.to_thread(
                         Transaction.objects.create,
                         user=user,
@@ -107,7 +103,6 @@ class Command(BaseCommand):
                 print(f"Error: {e}")
                 await message.answer("❌ System Error.")
 
-        # Link Validator (Only in Private)
         @dp.message(F.chat.type == "private")
         async def handle_dm_messages(message: types.Message):
             text = message.text
@@ -118,10 +113,6 @@ class Command(BaseCommand):
             # Check for link
             link_pattern = r"(http|https|www\.|t\.me|\.com)"
             if re.search(link_pattern, text, re.IGNORECASE):
-                if len(text) > 200:
-                    await message.answer(f"❌ Text is too long ({len(text)}/200 chars).")
-                    return
-                
                 # Save Ad
                 try:
                     user = await asyncio.to_thread(TelegramUser.objects.get, telegram_id=user_id)
@@ -143,7 +134,6 @@ class Command(BaseCommand):
             else:
                 await message.answer("Please send the link you want to advertise.")
 
-        # --- START LOOP ---
         async def main():
             print("🤖 Bot is Online and Listening...")
             await dp.start_polling(bot)
