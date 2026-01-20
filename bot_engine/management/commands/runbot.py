@@ -14,7 +14,6 @@ class Command(BaseCommand):
     help = 'Runs the Telegram Bot'
 
     def handle(self, *args, **options):
-        # Initialize Bot
         bot = Bot(token=settings.TELEGRAM_BOT_TOKEN)
         dp = Dispatcher()
 
@@ -22,9 +21,9 @@ class Command(BaseCommand):
         @dp.message(F.chat.type.in_({"group", "supergroup"}))
         async def handle_group_messages(message: types.Message):
             
+            # Print msg to terminal
             print(f"👀 Group msg from {message.from_user.first_name}: {message.text}")
 
-            # Check for ANY link
             link_pattern = r"(http|https|www\.|t\.me|\.com|\.co\.ke|\.org)"
             
             if message.text and re.search(link_pattern, message.text, re.IGNORECASE):
@@ -37,10 +36,11 @@ class Command(BaseCommand):
 
                 try:
                     name = message.from_user.first_name
+                    # --- NEW TEXT REQUESTED BY USER ---
                     await message.answer(
                         f"🚫 Links are not allowed here, {name}!\n\n"
                         "Want to advertise? I can post it for you.\n"
-                        "👉 DM me: @Linkgroup_bot"
+                        "👉 DM me: @Linkgrouperbot"
                     )
                 except Exception:
                     pass
@@ -61,10 +61,10 @@ class Command(BaseCommand):
             await message.answer(
                 f"Welcome {message.from_user.first_name}! 🚀\n"
                 "I am the Link Warden.\n\n"
-                "How to Post:\n"
-                "1. Send me your link/text here (Max 100 chars).\n"
-                "2. Pay 30 KES via M-Pesa.\n"
-                "3. I will automatically post it to the group for you!"
+                "📝 **Pricing:**\n"
+                "• Regular Link: 30 KES\n"
+                "• WhatsApp/Telegram Link: 250 KES\n\n"
+                "Send me your link to start!"
             )
 
         @dp.message(F.chat.type == "private", F.text.regexp(r'^(07|01|\+254)\d{8}$'))
@@ -72,20 +72,41 @@ class Command(BaseCommand):
             phone = message.text
             user_id = message.from_user.id
             
+            # 1. Get User & Last Ad
             try:
                 user = await asyncio.to_thread(TelegramUser.objects.get, telegram_id=user_id)
+                # Get the latest unposted ad
+                last_ad = await asyncio.to_thread(
+                    lambda: PendingAd.objects.filter(user=user, is_posted=False).last()
+                )
             except TelegramUser.DoesNotExist:
                 await message.answer("Please type /start first.")
                 return
-            
-            await message.answer(f"⌛ Sending STK Push to {phone} for KES 1 (Test)...")
+
+            if not last_ad:
+                await message.answer("⚠️ Please send me your ad text/link FIRST, then send the phone number.")
+                return
+
+            # 2. DETERMINE PRICE (Dynamic Pricing)
+            # Check for "Premium" links (WhatsApp or Telegram)
+            premium_pattern = r"(t\.me|telegram\.me|chat\.whatsapp\.com)"
+            is_premium = re.search(premium_pattern, last_ad.message_text, re.IGNORECASE)
+
+            if is_premium:
+                amount_to_charge = 1 # CHANGE THIS TO 250 WHEN READY FOR REAL MONEY
+                ad_type = "Premium (WhatsApp/Telegram)"
+            else:
+                amount_to_charge = 1 # CHANGE THIS TO 30 WHEN READY
+                ad_type = "Standard"
+
+            await message.answer(f"⌛ Sending request to {phone}...\nType: {ad_type}\nPrice: {amount_to_charge} KES")
             
             try:
-                # Trigger Payment
+                # 3. Trigger Payment
                 response = await asyncio.to_thread(
                     initiate_stk_push, 
                     phone_number=phone, 
-                    amount=1
+                    amount=amount_to_charge
                 )
                 
                 checkout_id = response.get('CheckoutRequestID')
@@ -95,14 +116,14 @@ class Command(BaseCommand):
                         Transaction.objects.create,
                         user=user,
                         checkout_request_id=checkout_id,
-                        amount=1, 
+                        amount=amount_to_charge, 
                         phone_number=phone
                     )
-                    await message.answer("📲 Check your phone and enter PIN!")
+                    await message.answer("📲 **Check your phone and enter PIN!**")
                 else:
-                    # UPDATED ERROR MESSAGE
-                    await message.answer("❌ Payment Request Failed.\nCheck if the phone number is correct.")
-                    print(f"Paystack Error: {response}")
+                    # Show the exact error from Paystack
+                    error_msg = response.get('error', 'Unknown Error')
+                    await message.answer(f"❌ Payment Request Failed.\nReason: {error_msg}")
                     
             except Exception as e:
                 print(f"Error: {e}")
@@ -115,23 +136,13 @@ class Command(BaseCommand):
             
             if not text: return
 
-            # 1. Rule: Max 100 Chars
-            if len(text) > 100:
-                await message.answer(f"❌ Too long! ({len(text)}/100 chars)")
+            if len(text) > 200:
+                await message.answer(f"❌ Too long! ({len(text)}/200 chars)")
                 return
 
-            # 2. Rule: BLOCK COMPETITORS (WhatsApp/Telegram Group Links)
-            # This Regex looks for t.me, telegram.me, or chat.whatsapp.com
-            forbidden_pattern = r"(t\.me|telegram\.me|chat\.whatsapp\.com)"
-            if re.search(forbidden_pattern, text, re.IGNORECASE):
-                await message.answer(
-                    "❌ **Ad Rejected**\n"
-                    "We do not allow promoting other Telegram channels or WhatsApp groups."
-                )
-                return
-
-            # 3. Rule: Accept General Links
+            # Accept Any Link (We price it later in process_payment)
             link_pattern = r"(http|https|www\.|t\.me|\.com)"
+            
             if re.search(link_pattern, text, re.IGNORECASE):
                 try:
                     user = await asyncio.to_thread(TelegramUser.objects.get, telegram_id=user_id)
@@ -139,6 +150,7 @@ class Command(BaseCommand):
                      await message.answer("Please type /start first.")
                      return
 
+                # Save the ad
                 await asyncio.to_thread(
                     PendingAd.objects.create,
                     user=user,
@@ -146,9 +158,10 @@ class Command(BaseCommand):
                     is_posted=False
                 )
 
+                # --- NEW TEXT REQUESTED BY USER ---
                 await message.answer(
                     "✅ Ad Accepted!\n\n"
-                    "Reply with your M-Pesa Number (e.g., 0712345678) to complete payment."
+                    "Reply with your M-Pesa/Airtel money Number (e.g., 0712345678) to complete payment."
                 )
             else:
                 await message.answer("Please send the link you want to advertise.")
