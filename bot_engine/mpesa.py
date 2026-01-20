@@ -4,35 +4,31 @@ from django.conf import settings
 def initiate_stk_push(phone_number, amount, account_reference="LinkBot"):
     """
     Triggers Paystack Charge.
-    Detects M-Pesa vs Airtel based on prefixes.
     """
     url = "https://api.paystack.co/charge"
     
-    # 1. Sanitize Phone
-    clean_phone = phone_number
-    if clean_phone.startswith("+254"):
-        clean_phone = "0" + clean_phone[4:]
-    elif clean_phone.startswith("254"):
-        clean_phone = "0" + clean_phone[3:]
+    # 1. STRICT Phone Formatting for Paystack
+    # Remove any +, spaces, or dashes
+    clean_phone = phone_number.replace("+", "").replace(" ", "").strip()
     
-    # 2. Detect Carrier (Airtel Prefixes in Kenya)
-    # Airtel: 073x, 075x, 078x, 010x
+    # Ensure it starts with 254
+    if clean_phone.startswith("0"):
+        clean_phone = "254" + clean_phone[1:]
+    elif clean_phone.startswith("7") or clean_phone.startswith("1"):
+         clean_phone = "254" + clean_phone
+    
+    # 2. Detect Carrier
+    # Airtel Prefixes: 073, 075, 078, 010 (mapped to 25473, 25475, etc)
     provider = "mpesa" # Default
-    if clean_phone.startswith(("073", "075", "078", "010")):
+    if clean_phone.startswith(("25473", "25475", "25478", "25410")):
         provider = "airtel-money"
-        print(f"📶 Detected Airtel Number: {clean_phone}")
-    else:
-        print(f"Mzitu Detected M-Pesa Number: {clean_phone}")
-
-    # 3. Prepare for Paystack (Format 254...)
-    paystack_phone = "254" + clean_phone[1:]
 
     payload = {
-        "email": f"customer{paystack_phone}@linkbot.karanja.ninja", 
-        "amount": amount * 100,  # Cents
+        "email": f"customer{clean_phone}@linkbot.karanja.ninja", 
+        "amount": amount * 100,  # Convert to cents
         "currency": "KES",
         "mobile_money": {
-            "phone": paystack_phone,
+            "phone": clean_phone,
             "provider": provider
         }
     }
@@ -54,10 +50,7 @@ def initiate_stk_push(phone_number, amount, account_reference="LinkBot"):
                 "ResponseDescription": "Success"
             }
         else:
-            # Print the EXACT error from Paystack so we can debug
-            print(f"❌ Paystack Refused: {res_json}")
-            return {"error": res_json.get("message", "Unknown Error")}
+            return {"error": res_json.get("message", "Paystack Rejected Request")}
 
     except Exception as e:
-        print(f"Connection Error: {e}")
         return {"error": str(e)}

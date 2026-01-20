@@ -20,25 +20,14 @@ class Command(BaseCommand):
         # --- 1. POLICEMAN (Group Handler) ---
         @dp.message(F.chat.type.in_({"group", "supergroup"}))
         async def handle_group_messages(message: types.Message):
-            
-            # Print msg to terminal
             print(f"👀 Group msg from {message.from_user.first_name}: {message.text}")
-
-            link_pattern = r"(http|https|www\.|t\.me|\.com|\.co\.ke|\.org)"
             
+            link_pattern = r"(http|https|www\.|t\.me|\.com|\.co\.ke|\.org)"
             if message.text and re.search(link_pattern, message.text, re.IGNORECASE):
-                print(f"👮 Policeman: Deleting link from {message.from_user.first_name}")
-                
                 try:
                     await message.delete()
-                except Exception:
-                    pass
-
-                try:
-                    name = message.from_user.first_name
-                    # --- NEW TEXT REQUESTED BY USER ---
                     await message.answer(
-                        f"🚫 Links are not allowed here, {name}!\n\n"
+                        f"🚫 Links are not allowed here, {message.from_user.first_name}!\n\n"
                         "Want to advertise? I can post it for you.\n"
                         "👉 DM me: @Linkgrouperbot"
                     )
@@ -72,10 +61,9 @@ class Command(BaseCommand):
             phone = message.text
             user_id = message.from_user.id
             
-            # 1. Get User & Last Ad
+            # 1. Retrieve the Ad to check price
             try:
                 user = await asyncio.to_thread(TelegramUser.objects.get, telegram_id=user_id)
-                # Get the latest unposted ad
                 last_ad = await asyncio.to_thread(
                     lambda: PendingAd.objects.filter(user=user, is_posted=False).last()
                 )
@@ -84,29 +72,24 @@ class Command(BaseCommand):
                 return
 
             if not last_ad:
-                await message.answer("⚠️ Please send me your ad text/link FIRST, then send the phone number.")
+                await message.answer("⚠️ Please send me your ad text/link FIRST.")
                 return
 
-            # 2. DETERMINE PRICE (Dynamic Pricing)
-            # Check for "Premium" links (WhatsApp or Telegram)
+            # 2. Re-Calculate Price (Just to be safe)
             premium_pattern = r"(t\.me|telegram\.me|chat\.whatsapp\.com)"
-            is_premium = re.search(premium_pattern, last_ad.message_text, re.IGNORECASE)
-
-            if is_premium:
-                amount_to_charge = 1 # CHANGE THIS TO 250 WHEN READY FOR REAL MONEY
-                ad_type = "Premium (WhatsApp/Telegram)"
+            if re.search(premium_pattern, last_ad.message_text, re.IGNORECASE):
+                amount = 250 # Premium Price
             else:
-                amount_to_charge = 1 # CHANGE THIS TO 30 WHEN READY
-                ad_type = "Standard"
+                amount = 30  # Standard Price
 
-            await message.answer(f"⌛ Sending request to {phone}...\nType: {ad_type}\nPrice: {amount_to_charge} KES")
+            await message.answer(f"⌛ Sending request to {phone} for {amount} KES...")
             
             try:
                 # 3. Trigger Payment
                 response = await asyncio.to_thread(
                     initiate_stk_push, 
                     phone_number=phone, 
-                    amount=amount_to_charge
+                    amount=amount
                 )
                 
                 checkout_id = response.get('CheckoutRequestID')
@@ -116,14 +99,13 @@ class Command(BaseCommand):
                         Transaction.objects.create,
                         user=user,
                         checkout_request_id=checkout_id,
-                        amount=amount_to_charge, 
+                        amount=amount, 
                         phone_number=phone
                     )
                     await message.answer("📲 **Check your phone and enter PIN!**")
                 else:
-                    # Show the exact error from Paystack
                     error_msg = response.get('error', 'Unknown Error')
-                    await message.answer(f"❌ Payment Request Failed.\nReason: {error_msg}")
+                    await message.answer(f"❌ Payment Failed.\nReason: {error_msg}")
                     
             except Exception as e:
                 print(f"Error: {e}")
@@ -140,17 +122,17 @@ class Command(BaseCommand):
                 await message.answer(f"❌ Too long! ({len(text)}/200 chars)")
                 return
 
-            # Accept Any Link (We price it later in process_payment)
+            # Check for Links
             link_pattern = r"(http|https|www\.|t\.me|\.com)"
-            
             if re.search(link_pattern, text, re.IGNORECASE):
+                
                 try:
                     user = await asyncio.to_thread(TelegramUser.objects.get, telegram_id=user_id)
                 except TelegramUser.DoesNotExist:
                      await message.answer("Please type /start first.")
                      return
 
-                # Save the ad
+                # Save Ad
                 await asyncio.to_thread(
                     PendingAd.objects.create,
                     user=user,
@@ -158,10 +140,20 @@ class Command(BaseCommand):
                     is_posted=False
                 )
 
-                # --- NEW TEXT REQUESTED BY USER ---
+                # --- NEW PRICING ALERT LOGIC ---
+                premium_pattern = r"(t\.me|telegram\.me|chat\.whatsapp\.com)"
+                if re.search(premium_pattern, text, re.IGNORECASE):
+                    price = 250
+                    reason = "This is a Premium Link (WhatsApp/Telegram)."
+                else:
+                    price = 30
+                    reason = "Standard Link Rate."
+
                 await message.answer(
-                    "✅ Ad Accepted!\n\n"
-                    "Reply with your M-Pesa/Airtel money Number (e.g., 0712345678) to complete payment."
+                    f"✅ **Ad Accepted!**\n"
+                    f"💰 Price: **{price} KES**\n"
+                    f"ℹ️ Reason: {reason}\n\n"
+                    "Reply with your **M-Pesa/Airtel Number** to pay."
                 )
             else:
                 await message.answer("Please send the link you want to advertise.")
