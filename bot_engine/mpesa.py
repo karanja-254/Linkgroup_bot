@@ -1,52 +1,51 @@
 import requests
-import base64
-from datetime import datetime
 from django.conf import settings
 
-def get_access_token():
-    """Generates the temporary password to talk to Safaricom"""
-    consumer_key = settings.MPESA_CONSUMER_KEY
-    consumer_secret = settings.MPESA_CONSUMER_SECRET
-    api_URL = "https://sandbox.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials"
-    
-    r = requests.get(api_URL, auth=(consumer_key, consumer_secret))
-    return r.json()['access_token']
-
 def initiate_stk_push(phone_number, amount, account_reference="LinkBot"):
-    """Sends the pop-up to the user's phone"""
-    access_token = get_access_token()
-    api_url = "https://sandbox.safaricom.co.ke/mpesa/stkpush/v1/processrequest"
+    """
+    Triggers a Payment Request via Paystack (Charge API).
+    """
+    url = "https://api.paystack.co/charge"
     
-    # Format timestamp
-    timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
-    
-    # Create Password
-    passkey = settings.MPESA_PASSKEY
-    shortcode = settings.MPESA_SHORTCODE
-    password_str = f"{shortcode}{passkey}{timestamp}"
-    password = base64.b64encode(password_str.encode()).decode('utf-8')
-    
-    # Sanitize Phone Number (Must start with 254)
+    # 1. Format Phone: Paystack prefers 2547...
     if phone_number.startswith("0"):
         phone_number = "254" + phone_number[1:]
-    elif phone_number.startswith("+254"):
+    elif phone_number.startswith("+"):
         phone_number = phone_number[1:]
-        
+
+    # 2. Prepare Payload
+    # We create a dummy email because Paystack requires one
     payload = {
-        "BusinessShortCode": shortcode,
-        "Password": password,
-        "Timestamp": timestamp,
-        "TransactionType": "CustomerPayBillOnline",
-        "Amount": amount,
-        "PartyA": phone_number,
-        "PartyB": shortcode,
-        "PhoneNumber": phone_number,
-        "CallBackURL": settings.MPESA_CALLBACK_URL,
-        "AccountReference": account_reference,
-        "TransactionDesc": "Link Payment"
+        "email": f"customer{phone_number}@linkbot.karanja.ninja", 
+        "amount": amount * 100,  # Paystack uses CENTS (100 cents = 1 KES)
+        "currency": "KES",
+        "mobile_money": {
+            "phone": phone_number,
+            "provider": "mpesa"
+        }
     }
-    
-    headers = { "Authorization": f"Bearer {access_token}" }
-    
-    response = requests.post(api_url, json=payload, headers=headers)
-    return response.json()
+
+    headers = {
+        "Authorization": f"Bearer {settings.PAYSTACK_SECRET_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    try:
+        response = requests.post(url, json=payload, headers=headers)
+        res_json = response.json()
+
+        # 3. Check if the prompt was sent
+        if res_json.get("status") is True:
+            data = res_json.get("data", {})
+            return {
+                "CheckoutRequestID": data.get("reference"), # We use Paystack Reference as the ID
+                "ResponseCode": "0",
+                "ResponseDescription": "Success"
+            }
+        else:
+            print(f"Paystack Error: {res_json}")
+            return {}
+
+    except Exception as e:
+        print(f"Connection Error: {e}")
+        return {}
