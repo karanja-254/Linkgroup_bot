@@ -3,27 +3,30 @@ from django.conf import settings
 
 def initiate_stk_push(phone_number, amount, account_reference="LinkBot"):
     """
-    Triggers Paystack Charge with aggressive phone number cleaning.
+    Triggers Paystack Charge.
+    Forces phone number into '07xx' or '01xx' format.
     """
     url = "https://api.paystack.co/charge"
     
-    # 1. AGGRESSIVE CLEANING
-    # Remove spaces, plus signs, dashes
-    clean_phone = str(phone_number).replace(" ", "").replace("+", "").replace("-", "").strip()
+    # 1. CLEANING: Remove spaces, +, -
+    raw_phone = str(phone_number).replace(" ", "").replace("+", "").replace("-", "").strip()
     
-    # Force into 254 format
-    if clean_phone.startswith("0"):
-        clean_phone = "254" + clean_phone[1:]  # 0722 -> 254722
-    elif clean_phone.startswith("7") or clean_phone.startswith("1"):
-        clean_phone = "254" + clean_phone      # 722 -> 254722
-    # If it already starts with 254, leave it.
+    # 2. FORMATTING: Convert international (254) to local (0)
+    if raw_phone.startswith("254"):
+        clean_phone = "0" + raw_phone[3:]  # 254722 -> 0722
+    elif raw_phone.startswith("7") or raw_phone.startswith("1"):
+        clean_phone = "0" + raw_phone      # 722 -> 0722
+    else:
+        clean_phone = raw_phone            # Already starts with 0 (or invalid)
 
-    # 2. Detect Carrier (Airtel Prefixes)
+    # 3. Detect Carrier (Airtel Prefixes)
     provider = "mpesa"
-    # Airtel prefixes: 073, 075, 078, 010, 011
-    # Since we converted to 254, check 25473, 25410, etc.
-    if clean_phone.startswith(("25473", "25475", "25478", "25410", "25411")):
+    # Airtel: 073, 075, 078, 010, 011
+    if clean_phone.startswith(("073", "075", "078", "010", "011")):
         provider = "airtel-money"
+
+    # Debug Print (So we can see what we are sending)
+    print(f"📡 Sending to Paystack: Phone={clean_phone}, Provider={provider}, Amount={amount}")
 
     payload = {
         "email": f"customer{clean_phone}@linkbot.karanja.ninja", 
@@ -52,6 +55,7 @@ def initiate_stk_push(phone_number, amount, account_reference="LinkBot"):
                 "ResponseDescription": "Success"
             }
         else:
+            # Return the exact error message from Paystack
             return {"error": res_json.get("message", "Paystack Rejected Request")}
 
     except Exception as e:
