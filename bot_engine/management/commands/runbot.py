@@ -20,8 +20,6 @@ class Command(BaseCommand):
         # --- 1. POLICEMAN (Group Handler) ---
         @dp.message(F.chat.type.in_({"group", "supergroup"}))
         async def handle_group_messages(message: types.Message):
-            print(f"👀 Group msg from {message.from_user.first_name}: {message.text}")
-            
             link_pattern = r"(http|https|www\.|t\.me|\.com|\.co\.ke|\.org)"
             if message.text and re.search(link_pattern, message.text, re.IGNORECASE):
                 try:
@@ -56,12 +54,13 @@ class Command(BaseCommand):
                 "Send me your link to start!"
             )
 
-        @dp.message(F.chat.type == "private", F.text.regexp(r'^(07|01|\+254)\d{8}$'))
+        # UPDATED: More flexible phone checker (Allows 07xx, 254xx, +254xx)
+        @dp.message(F.chat.type == "private", F.text.regexp(r'^[\d\+\s]{9,15}$'))
         async def process_payment(message: types.Message):
             phone = message.text
             user_id = message.from_user.id
             
-            # 1. Retrieve the Ad to check price
+            # 1. Retrieve the Ad
             try:
                 user = await asyncio.to_thread(TelegramUser.objects.get, telegram_id=user_id)
                 last_ad = await asyncio.to_thread(
@@ -71,16 +70,17 @@ class Command(BaseCommand):
                 await message.answer("Please type /start first.")
                 return
 
+            # FAILSAFE: If no ad found, ASK for it nicely.
             if not last_ad:
-                await message.answer("⚠️ Please send me your ad text/link FIRST.")
+                await message.answer("⚠️ I don't see your ad yet. Please send the **Link** first, THEN the phone number.")
                 return
 
-            # 2. Re-Calculate Price (Just to be safe)
+            # 2. Calculate Price
             premium_pattern = r"(t\.me|telegram\.me|chat\.whatsapp\.com)"
             if re.search(premium_pattern, last_ad.message_text, re.IGNORECASE):
-                amount = 250 # Premium Price
+                amount = 250
             else:
-                amount = 30  # Standard Price
+                amount = 30
 
             await message.answer(f"⌛ Sending request to {phone} for {amount} KES...")
             
@@ -122,7 +122,7 @@ class Command(BaseCommand):
                 await message.answer(f"❌ Too long! ({len(text)}/200 chars)")
                 return
 
-            # Check for Links
+            # Check for Link
             link_pattern = r"(http|https|www\.|t\.me|\.com)"
             if re.search(link_pattern, text, re.IGNORECASE):
                 
@@ -140,20 +140,20 @@ class Command(BaseCommand):
                     is_posted=False
                 )
 
-                # --- NEW PRICING ALERT LOGIC ---
+                # Pricing Alert
                 premium_pattern = r"(t\.me|telegram\.me|chat\.whatsapp\.com)"
                 if re.search(premium_pattern, text, re.IGNORECASE):
                     price = 250
-                    reason = "This is a Premium Link (WhatsApp/Telegram)."
+                    reason = "Premium Link (WhatsApp/Telegram)."
                 else:
                     price = 30
-                    reason = "Standard Link Rate."
+                    reason = "Standard Link."
 
                 await message.answer(
                     f"✅ **Ad Accepted!**\n"
                     f"💰 Price: **{price} KES**\n"
                     f"ℹ️ Reason: {reason}\n\n"
-                    "Reply with your **M-Pesa/Airtel Number** to pay."
+                    "Reply with your **M-Pesa/Airtel Number** (e.g., 0712...) to pay."
                 )
             else:
                 await message.answer("Please send the link you want to advertise.")
