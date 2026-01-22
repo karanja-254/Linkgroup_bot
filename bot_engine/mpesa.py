@@ -4,40 +4,40 @@ from django.conf import settings
 def initiate_stk_push(phone_number, amount, account_reference="LinkBot"):
     """
     Triggers Paystack Charge.
-    FORMAT RULE: Phone must be '254xxxxxxxxx' (International format, no +).
+    FORMAT RULE: Phone must be '+254xxxxxxxxx' (Must include PLUS sign).
     """
     url = "https://api.paystack.co/charge"
     
-    # 1. CLEANING: Remove spaces, +, -
-    raw_phone = str(phone_number).replace(" ", "").replace("+", "").replace("-", "").strip()
+    # 1. CLEANING: Remove spaces and dashes
+    raw = str(phone_number).replace(" ", "").replace("-", "").strip()
     
-    # 2. FORMATTING: Ensure it starts with 254
-    if raw_phone.startswith("254"):
-        clean_phone = raw_phone
-    elif raw_phone.startswith("0"):
-        clean_phone = "254" + raw_phone[1:]  # 0722 -> 254722
-    elif raw_phone.startswith("7") or raw_phone.startswith("1"):
-        clean_phone = "254" + raw_phone      # 722 -> 254722
+    # 2. FORMATTING: Force '+254'
+    # If it starts with '0', remove it and add '+254' (0722 -> +254722)
+    if raw.startswith("0"):
+        clean_phone = "+254" + raw[1:]
+    # If it starts with '254' (but no plus), add '+' (254722 -> +254722)
+    elif raw.startswith("254"):
+        clean_phone = "+" + raw
+    # If it starts with '+254', keep it
+    elif raw.startswith("+254"):
+        clean_phone = raw
+    # Fallback for '722...' -> '+254722'
+    elif raw.startswith("7") or raw.startswith("1"):
+        clean_phone = "+254" + raw
     else:
-        # Fallback: Send as-is if it doesn't match known patterns
-        clean_phone = raw_phone
+        clean_phone = raw
 
-    # 3. Detect Carrier
-    # Default to mpesa (Safaricom)
+    # 3. Detect Carrier (Airtel vs M-Pesa)
     provider = "mpesa"
-    
-    # Check for Airtel prefixes (073, 075, 078, 010, 011)
-    # Note: We check the "254" version of these prefixes
-    if clean_phone.startswith(("25473", "25475", "25478", "25410", "25411")):
-        # Paystack code for Airtel Money is often 'atl' or 'airtel-money'.
-        # We will try 'atl' based on documentation, but 'mpesa' is safer for your 0723 number.
-        provider = "atl" 
+    # Airtel Prefixes: +25473, +25475, +25478, +25410, +25411
+    if clean_phone.startswith(("+25473", "+25475", "+25478", "+25410", "+25411")):
+        provider = "atl" # Try 'atl' first for Airtel
 
-    print(f"📡 Sending to Paystack: Phone={clean_phone}, Provider={provider}, Amount={amount}")
+    print(f"🔥 FINAL FORMAT: Sending Phone={clean_phone} Provider={provider}")
 
     payload = {
-        "email": f"customer{clean_phone}@linkbot.karanja.ninja", 
-        "amount": amount * 100,  # Cents
+        "email": f"customer{clean_phone.replace('+','')}@linkbot.karanja.ninja", 
+        "amount": amount * 100,
         "currency": "KES",
         "mobile_money": {
             "phone": clean_phone,
@@ -62,7 +62,6 @@ def initiate_stk_push(phone_number, amount, account_reference="LinkBot"):
                 "ResponseDescription": "Success"
             }
         else:
-            # Return the exact error message from Paystack so you see it in Telegram
             return {"error": res_json.get("message", "Paystack Rejected Request")}
 
     except Exception as e:
